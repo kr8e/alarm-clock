@@ -18,13 +18,17 @@ const int DAYLIGHT_OFFSET_SEC = 3600;
 int alarmHour = 7;
 int alarmMinute = 0;
 
-// Alarm duration and tone switching
-const unsigned long ALARM_DURATION_MS = 5UL * 60UL * 1000UL;  // 5 minutes
-const unsigned long TONE_SWITCH_MS = 400;
-
 // Relay pins (adjust to your wiring)
 const int RELAY_TONE_1_PIN = 26;
 const int RELAY_TONE_2_PIN = 27;
+
+// Alarm pattern timing
+const unsigned long CHIRP_1_MS = 1000;           // 1 second chirp
+const unsigned long WAIT_AFTER_CHIRP_1_MS = 30000; // 30 seconds
+const unsigned long CHIRP_2_MS = 5000;           // 5 second chirp
+const unsigned long WAIT_AFTER_CHIRP_2_MS = 120000; // 2 minutes
+const unsigned long CONTINUOUS_ALARM_MS = 30000; // 30 seconds
+const unsigned long TONE_SWITCH_MS = 400;        // dual-tone alternation during continuous phase
 
 // OLED (SF_16225-1 is typically SSD1306-compatible, 128x64, I2C)
 #define SCREEN_WIDTH 128
@@ -33,9 +37,18 @@ const int RELAY_TONE_2_PIN = 27;
 #define OLED_I2C_ADDR 0x3C
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
+enum AlarmPhase {
+  ALARM_IDLE,
+  ALARM_CHIRP_1,
+  ALARM_WAIT_1,
+  ALARM_CHIRP_2,
+  ALARM_WAIT_2,
+  ALARM_CONTINUOUS,
+};
+
 bool alarmTriggeredToday = false;
-bool alarmActive = false;
-unsigned long alarmStartMs = 0;
+AlarmPhase alarmPhase = ALARM_IDLE;
+unsigned long phaseStartedMs = 0;
 unsigned long lastToneSwitchMs = 0;
 bool toneState = false;
 int lastDayOfYear = -1;
@@ -47,35 +60,79 @@ void setRelays(bool tone1, bool tone2) {
 }
 
 void stopAlarm() {
-  alarmActive = false;
+  alarmPhase = ALARM_IDLE;
   setRelays(false, false);
 }
 
-void startAlarm() {
-  alarmActive = true;
-  alarmStartMs = millis();
-  lastToneSwitchMs = millis();
-  toneState = false;
-  setRelays(true, false);
+void beginPhase(AlarmPhase phase) {
+  alarmPhase = phase;
+  phaseStartedMs = millis();
+
+  if (phase == ALARM_CHIRP_1 || phase == ALARM_CHIRP_2) {
+    // Chirp on tone 1
+    setRelays(true, false);
+  } else if (phase == ALARM_WAIT_1 || phase == ALARM_WAIT_2 || phase == ALARM_IDLE) {
+    setRelays(false, false);
+  } else if (phase == ALARM_CONTINUOUS) {
+    toneState = true;
+    lastToneSwitchMs = millis();
+    setRelays(true, false);
+  }
 }
 
-void updateAlarmTone() {
-  if (!alarmActive) return;
+void startAlarm() {
+  beginPhase(ALARM_CHIRP_1);
+}
 
-  unsigned long nowMs = millis();
-  if (nowMs - alarmStartMs >= ALARM_DURATION_MS) {
-    stopAlarm();
-    return;
-  }
+void updateAlarmSequence() {
+  if (alarmPhase == ALARM_IDLE) return;
 
-  if (nowMs - lastToneSwitchMs >= TONE_SWITCH_MS) {
-    lastToneSwitchMs = nowMs;
-    toneState = !toneState;
-    if (toneState) {
-      setRelays(true, false);
-    } else {
-      setRelays(false, true);
-    }
+  const unsigned long nowMs = millis();
+
+  switch (alarmPhase) {
+    case ALARM_CHIRP_1:
+      if (nowMs - phaseStartedMs >= CHIRP_1_MS) {
+        beginPhase(ALARM_WAIT_1);
+      }
+      break;
+
+    case ALARM_WAIT_1:
+      if (nowMs - phaseStartedMs >= WAIT_AFTER_CHIRP_1_MS) {
+        beginPhase(ALARM_CHIRP_2);
+      }
+      break;
+
+    case ALARM_CHIRP_2:
+      if (nowMs - phaseStartedMs >= CHIRP_2_MS) {
+        beginPhase(ALARM_WAIT_2);
+      }
+      break;
+
+    case ALARM_WAIT_2:
+      if (nowMs - phaseStartedMs >= WAIT_AFTER_CHIRP_2_MS) {
+        beginPhase(ALARM_CONTINUOUS);
+      }
+      break;
+
+    case ALARM_CONTINUOUS:
+      if (nowMs - phaseStartedMs >= CONTINUOUS_ALARM_MS) {
+        stopAlarm();
+        break;
+      }
+
+      if (nowMs - lastToneSwitchMs >= TONE_SWITCH_MS) {
+        lastToneSwitchMs = nowMs;
+        toneState = !toneState;
+        if (toneState) {
+          setRelays(true, false);
+        } else {
+          setRelays(false, true);
+        }
+      }
+      break;
+
+    case ALARM_IDLE:
+      break;
   }
 }
 
@@ -93,6 +150,25 @@ bool getLocalTimeSafe(struct tm& timeinfo) {
     return false;
   }
   return true;
+}
+
+const char* alarmPhaseLabel() {
+  switch (alarmPhase) {
+    case ALARM_IDLE:
+      return "IDLE";
+    case ALARM_CHIRP_1:
+      return "CH1";
+    case ALARM_WAIT_1:
+      return "W1";
+    case ALARM_CHIRP_2:
+      return "CH2";
+    case ALARM_WAIT_2:
+      return "W2";
+    case ALARM_CONTINUOUS:
+      return "CONT";
+    default:
+      return "?";
+  }
 }
 
 void drawDisplay(const struct tm& t) {
@@ -117,12 +193,10 @@ void drawDisplay(const struct tm& t) {
   display.println(dateBuf);
 
   display.setCursor(0, 52);
-  display.printf("Alarm: %02d:%02d", alarmHour, alarmMinute);
+  display.printf("Alarm %02d:%02d", alarmHour, alarmMinute);
 
-  if (alarmActive) {
-    display.setCursor(88, 52);
-    display.print("ON");
-  }
+  display.setCursor(88, 52);
+  display.print(alarmPhaseLabel());
 
   display.display();
 }
@@ -156,7 +230,13 @@ void handleSerialCommands() {
     return;
   }
 
-  Serial.println("Commands: ALARM HH:MM | STOP");
+  if (cmd == "START") {
+    startAlarm();
+    Serial.println("Alarm sequence started.");
+    return;
+  }
+
+  Serial.println("Commands: ALARM HH:MM | START | STOP");
 }
 
 void setup() {
@@ -188,7 +268,7 @@ void setup() {
   display.println("Time synced.");
   display.println("Serial cmds:");
   display.println("ALARM HH:MM");
-  display.println("STOP");
+  display.println("START | STOP");
   display.display();
   delay(1200);
 }
@@ -216,7 +296,7 @@ void loop() {
     alarmTriggeredToday = true;
   }
 
-  updateAlarmTone();
+  updateAlarmSequence();
   drawDisplay(timeinfo);
 
   delay(100);
