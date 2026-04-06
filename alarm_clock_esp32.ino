@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <WebServer.h>
 #include <time.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -18,17 +19,20 @@ const int DAYLIGHT_OFFSET_SEC = 3600;
 int alarmHour = 7;
 int alarmMinute = 0;
 
+// Weekday schedule: 0=Sun,1=Mon,...6=Sat
+bool alarmWeekdays[7] = {false, true, true, true, true, true, false};
+
 // Relay pins (adjust to your wiring)
 const int RELAY_TONE_1_PIN = 26;
 const int RELAY_TONE_2_PIN = 27;
 
 // Alarm pattern timing
-const unsigned long CHIRP_1_MS = 1000;           // 1 second chirp
-const unsigned long WAIT_AFTER_CHIRP_1_MS = 30000; // 30 seconds
-const unsigned long CHIRP_2_MS = 5000;           // 5 second chirp
+const unsigned long CHIRP_1_MS = 1000;              // 1 second chirp
+const unsigned long WAIT_AFTER_CHIRP_1_MS = 30000;  // 30 seconds
+const unsigned long CHIRP_2_MS = 5000;              // 5 second chirp
 const unsigned long WAIT_AFTER_CHIRP_2_MS = 120000; // 2 minutes
-const unsigned long CONTINUOUS_ALARM_MS = 30000; // 30 seconds
-const unsigned long TONE_SWITCH_MS = 400;        // dual-tone alternation during continuous phase
+const unsigned long CONTINUOUS_ALARM_MS = 30000;    // 30 seconds
+const unsigned long TONE_SWITCH_MS = 400;           // dual-tone alternation during continuous phase
 
 // OLED (SF_16225-1 is typically SSD1306-compatible, 128x64, I2C)
 #define SCREEN_WIDTH 128
@@ -36,6 +40,8 @@ const unsigned long TONE_SWITCH_MS = 400;        // dual-tone alternation during
 #define OLED_RESET -1
 #define OLED_I2C_ADDR 0x3C
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+WebServer server(80);
 
 enum AlarmPhase {
   ALARM_IDLE,
@@ -91,46 +97,28 @@ void updateAlarmSequence() {
 
   switch (alarmPhase) {
     case ALARM_CHIRP_1:
-      if (nowMs - phaseStartedMs >= CHIRP_1_MS) {
-        beginPhase(ALARM_WAIT_1);
-      }
+      if (nowMs - phaseStartedMs >= CHIRP_1_MS) beginPhase(ALARM_WAIT_1);
       break;
-
     case ALARM_WAIT_1:
-      if (nowMs - phaseStartedMs >= WAIT_AFTER_CHIRP_1_MS) {
-        beginPhase(ALARM_CHIRP_2);
-      }
+      if (nowMs - phaseStartedMs >= WAIT_AFTER_CHIRP_1_MS) beginPhase(ALARM_CHIRP_2);
       break;
-
     case ALARM_CHIRP_2:
-      if (nowMs - phaseStartedMs >= CHIRP_2_MS) {
-        beginPhase(ALARM_WAIT_2);
-      }
+      if (nowMs - phaseStartedMs >= CHIRP_2_MS) beginPhase(ALARM_WAIT_2);
       break;
-
     case ALARM_WAIT_2:
-      if (nowMs - phaseStartedMs >= WAIT_AFTER_CHIRP_2_MS) {
-        beginPhase(ALARM_CONTINUOUS);
-      }
+      if (nowMs - phaseStartedMs >= WAIT_AFTER_CHIRP_2_MS) beginPhase(ALARM_CONTINUOUS);
       break;
-
     case ALARM_CONTINUOUS:
       if (nowMs - phaseStartedMs >= CONTINUOUS_ALARM_MS) {
         stopAlarm();
         break;
       }
-
       if (nowMs - lastToneSwitchMs >= TONE_SWITCH_MS) {
         lastToneSwitchMs = nowMs;
         toneState = !toneState;
-        if (toneState) {
-          setRelays(true, false);
-        } else {
-          setRelays(false, true);
-        }
+        setRelays(toneState, !toneState);
       }
       break;
-
     case ALARM_IDLE:
       break;
   }
@@ -146,28 +134,24 @@ void connectWiFi() {
 }
 
 bool getLocalTimeSafe(struct tm& timeinfo) {
-  if (!getLocalTime(&timeinfo)) {
-    return false;
-  }
+  if (!getLocalTime(&timeinfo)) return false;
   return true;
+}
+
+bool isWeekdayEnabled(int wday) {
+  if (wday < 0 || wday > 6) return false;
+  return alarmWeekdays[wday];
 }
 
 const char* alarmPhaseLabel() {
   switch (alarmPhase) {
-    case ALARM_IDLE:
-      return "IDLE";
-    case ALARM_CHIRP_1:
-      return "CH1";
-    case ALARM_WAIT_1:
-      return "W1";
-    case ALARM_CHIRP_2:
-      return "CH2";
-    case ALARM_WAIT_2:
-      return "W2";
-    case ALARM_CONTINUOUS:
-      return "CONT";
-    default:
-      return "?";
+    case ALARM_IDLE: return "IDLE";
+    case ALARM_CHIRP_1: return "CH1";
+    case ALARM_WAIT_1: return "W1";
+    case ALARM_CHIRP_2: return "CH2";
+    case ALARM_WAIT_2: return "W2";
+    case ALARM_CONTINUOUS: return "CONT";
+    default: return "?";
   }
 }
 
@@ -193,12 +177,78 @@ void drawDisplay(const struct tm& t) {
   display.println(dateBuf);
 
   display.setCursor(0, 52);
-  display.printf("Alarm %02d:%02d", alarmHour, alarmMinute);
-
-  display.setCursor(88, 52);
-  display.print(alarmPhaseLabel());
+  display.printf("%02d:%02d %s", alarmHour, alarmMinute, alarmPhaseLabel());
 
   display.display();
+}
+
+String weekdayCheckbox(const char* label, int dayIndex) {
+  String checked = alarmWeekdays[dayIndex] ? "checked" : "";
+  return String("<label><input type='checkbox' name='d") + dayIndex + "' value='1' " + checked + ">" + label + "</label> ";
+}
+
+String buildWebPage() {
+  String page = "<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
+  page += "<style>body{font-family:Arial;margin:18px}input,button{font-size:1rem;padding:6px;margin:4px}fieldset{margin-top:10px}</style>";
+  page += "</head><body><h2>ESP32 Alarm Clock</h2>";
+  page += "<p>IP: " + WiFi.localIP().toString() + "</p>";
+  page += "<form method='POST' action='/save'>";
+  page += "<label>Hour <input type='number' min='0' max='23' name='hour' value='" + String(alarmHour) + "'></label><br>";
+  page += "<label>Minute <input type='number' min='0' max='59' name='minute' value='" + String(alarmMinute) + "'></label>";
+  page += "<fieldset><legend>Weekday schedule</legend>";
+  page += weekdayCheckbox("Sun", 0);
+  page += weekdayCheckbox("Mon", 1);
+  page += weekdayCheckbox("Tue", 2);
+  page += weekdayCheckbox("Wed", 3);
+  page += weekdayCheckbox("Thu", 4);
+  page += weekdayCheckbox("Fri", 5);
+  page += weekdayCheckbox("Sat", 6);
+  page += "</fieldset><button type='submit'>Save</button></form>";
+  page += "<p><a href='/action?cmd=start'><button>Start Alarm</button></a> ";
+  page += "<a href='/action?cmd=stop'><button>Stop Alarm</button></a></p>";
+  page += "</body></html>";
+  return page;
+}
+
+void handleRoot() {
+  server.send(200, "text/html", buildWebPage());
+}
+
+void handleSave() {
+  if (server.hasArg("hour")) {
+    int h = server.arg("hour").toInt();
+    if (h >= 0 && h <= 23) alarmHour = h;
+  }
+  if (server.hasArg("minute")) {
+    int m = server.arg("minute").toInt();
+    if (m >= 0 && m <= 59) alarmMinute = m;
+  }
+
+  for (int i = 0; i < 7; i++) {
+    alarmWeekdays[i] = server.hasArg(String("d") + i);
+  }
+
+  alarmTriggeredToday = false;
+  server.sendHeader("Location", "/");
+  server.send(303, "text/plain", "Saved");
+}
+
+void handleAction() {
+  String cmd = server.arg("cmd");
+  if (cmd == "start") {
+    startAlarm();
+  } else if (cmd == "stop") {
+    stopAlarm();
+  }
+  server.sendHeader("Location", "/");
+  server.send(303, "text/plain", "OK");
+}
+
+void setupWebServer() {
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+  server.on("/action", HTTP_GET, handleAction);
+  server.begin();
 }
 
 void handleSerialCommands() {
@@ -207,7 +257,6 @@ void handleSerialCommands() {
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
 
-  // Format: ALARM HH:MM
   if (cmd.startsWith("ALARM ")) {
     String hhmm = cmd.substring(6);
     int sep = hhmm.indexOf(':');
@@ -224,15 +273,15 @@ void handleSerialCommands() {
     }
   }
 
-  if (cmd == "STOP") {
-    stopAlarm();
-    Serial.println("Alarm stopped.");
-    return;
-  }
-
   if (cmd == "START") {
     startAlarm();
     Serial.println("Alarm sequence started.");
+    return;
+  }
+
+  if (cmd == "STOP") {
+    stopAlarm();
+    Serial.println("Alarm stopped.");
     return;
   }
 
@@ -248,9 +297,7 @@ void setup() {
 
   Wire.begin();
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDR)) {
-    while (true) {
-      delay(1000);
-    }
+    while (true) delay(1000);
   }
 
   display.clearDisplay();
@@ -262,18 +309,19 @@ void setup() {
 
   connectWiFi();
   configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, "pool.ntp.org", "time.nist.gov");
+  setupWebServer();
 
   display.clearDisplay();
   display.setCursor(0, 0);
   display.println("Time synced.");
-  display.println("Serial cmds:");
-  display.println("ALARM HH:MM");
-  display.println("START | STOP");
+  display.println("Web UI ready.");
+  display.println(WiFi.localIP());
   display.display();
   delay(1200);
 }
 
 void loop() {
+  server.handleClient();
   handleSerialCommands();
 
   struct tm timeinfo;
@@ -289,6 +337,7 @@ void loop() {
   }
 
   if (!alarmTriggeredToday &&
+      isWeekdayEnabled(timeinfo.tm_wday) &&
       timeinfo.tm_hour == alarmHour &&
       timeinfo.tm_min == alarmMinute &&
       timeinfo.tm_sec < 2) {
