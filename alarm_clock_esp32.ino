@@ -142,10 +142,36 @@ bool isWeekdayEnabled(int wday) {
   return alarmWeekdays[wday];
 }
 
+bool getNextAlarmFromNow(const struct tm& now, int& nextDay, int& nextHour, int& nextMinute) {
+  for (int dayOffset = 0; dayOffset <= 7; dayOffset++) {
+    int day = (now.tm_wday + dayOffset) % 7;
+    if (!alarmWeekdays[day]) continue;
+
+    int h = alarmHours[day];
+    int m = alarmMinutes[day];
+
+    if (dayOffset == 0) {
+      bool isStillAhead = (now.tm_hour < h) || (now.tm_hour == h && now.tm_min < m) || (now.tm_hour == h && now.tm_min == m && now.tm_sec == 0);
+      if (!isStillAhead) continue;
+    }
+
+    nextDay = day;
+    nextHour = h;
+    nextMinute = m;
+    return true;
+  }
+
+  return false;
+}
+
 void drawDisplay(const struct tm& t) {
   char timeBuf[16];
   char dateBuf[24];
   int today = (t.tm_wday >= 0 && t.tm_wday <= 6) ? t.tm_wday : 0;
+  int nextDay = today;
+  int nextHour = alarmHours[today];
+  int nextMinute = alarmMinutes[today];
+  bool hasNextAlarm = getNextAlarmFromNow(t, nextDay, nextHour, nextMinute);
   strftime(timeBuf, sizeof(timeBuf), "%H:%M", &t);
   strftime(dateBuf, sizeof(dateBuf), "%a %d %b %Y", &t);
 
@@ -162,7 +188,11 @@ void drawDisplay(const struct tm& t) {
 
   display.setTextSize(2);
   display.setCursor(0, 40);
-  display.printf("%s %02d:%02d", DAY_LABELS[today], alarmHours[today], alarmMinutes[today]);
+  if (hasNextAlarm) {
+    display.printf("%s %02d:%02d", DAY_LABELS[nextDay], nextHour, nextMinute);
+  } else {
+    display.print("Alarm OFF");
+  }
   //display.println(dateBuf);
 
   //display.setCursor(0, 40);
