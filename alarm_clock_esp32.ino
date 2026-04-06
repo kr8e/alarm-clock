@@ -17,8 +17,8 @@ const int DAYLIGHT_OFFSET_SEC = 3600;
 
 // Per-day alarm configuration: 0=Sun,1=Mon,...6=Sat
 bool alarmWeekdays[7] = {false, true, true, true, true, true, false};
-int alarmHours[7] = {7, 7, 7, 7, 7, 7, 7};
-int alarmMinutes[7] = {0, 0, 0, 0, 0, 0, 0};
+int alarmHours[7] = {7, 5, 5, 5, 5, 4, 7};
+int alarmMinutes[7] = {0, 30, 30, 30, 30, 30, 0};
 
 // Relay pins (adjust to your wiring)
 const int RELAY_TONE_1_PIN = 26;
