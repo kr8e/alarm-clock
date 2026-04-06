@@ -142,18 +142,6 @@ bool isWeekdayEnabled(int wday) {
   return alarmWeekdays[wday];
 }
 
-const char* alarmPhaseLabel() {
-  switch (alarmPhase) {
-    case ALARM_IDLE: return "IDLE";
-    case ALARM_CHIRP_1: return "CH1";
-    case ALARM_WAIT_1: return "W1";
-    case ALARM_CHIRP_2: return "CH2";
-    case ALARM_WAIT_2: return "W2";
-    case ALARM_CONTINUOUS: return "CONT";
-    default: return "?";
-  }
-}
-
 void drawDisplay(const struct tm& t) {
   char timeBuf[16];
   char dateBuf[24];
@@ -174,11 +162,11 @@ void drawDisplay(const struct tm& t) {
 
   display.setTextSize(2);
   display.setCursor(0, 40);
-  display.printf("%s %02d:%02d %s", DAY_LABELS[today], alarmHours[today], alarmMinutes[today], alarmPhaseLabel());
+  display.printf("%s %02d:%02d", DAY_LABELS[today], alarmHours[today], alarmMinutes[today]);
   //display.println(dateBuf);
 
   //display.setCursor(0, 40);
-  //display.printf("%02d:%02d %s", alarmHour, alarmMinute, alarmPhaseLabel());
+  //display.printf("%02d:%02d", alarmHour, alarmMinute);
 
   display.display();
 }
