@@ -8,19 +8,17 @@
 // =========================
 // User configuration
 // =========================
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* WIFI_SSID = "";
+const char* WIFI_PASSWORD = "";
 
 // UTC offset in seconds (example: UTC-5 = -18000)
 const long GMT_OFFSET_SEC = -18000;
 const int DAYLIGHT_OFFSET_SEC = 3600;
 
-// Default alarm time (24-hour format)
-int alarmHour = 7;
-int alarmMinute = 0;
-
-// Weekday schedule: 0=Sun,1=Mon,...6=Sat
+// Per-day alarm configuration: 0=Sun,1=Mon,...6=Sat
 bool alarmWeekdays[7] = {false, true, true, true, true, true, false};
+int alarmHours[7] = {7, 7, 7, 7, 7, 7, 7};
+int alarmMinutes[7] = {0, 0, 0, 0, 0, 0, 0};
 
 // Relay pins (adjust to your wiring)
 const int RELAY_TONE_1_PIN = 26;
@@ -42,6 +40,7 @@ const unsigned long TONE_SWITCH_MS = 400;           // dual-tone alternation dur
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 WebServer server(80);
+const char* DAY_LABELS[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 
 enum AlarmPhase {
   ALARM_IDLE,
@@ -158,52 +157,64 @@ const char* alarmPhaseLabel() {
 void drawDisplay(const struct tm& t) {
   char timeBuf[16];
   char dateBuf[24];
-  strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &t);
+  int today = (t.tm_wday >= 0 && t.tm_wday <= 6) ? t.tm_wday : 0;
+  strftime(timeBuf, sizeof(timeBuf), "%H:%M", &t);
   strftime(dateBuf, sizeof(dateBuf), "%a %d %b %Y", &t);
 
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
 
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.println("ESP32 Alarm Clock");
+  //display.setTextSize(1);
+  //display.setCursor(0, 0);
+  //display.println("Alarm Clock");
 
-  display.setTextSize(2);
-  display.setCursor(0, 16);
+  display.setTextSize(3);
+  display.setCursor(0, 2);
   display.println(timeBuf);
 
-  display.setTextSize(1);
+  display.setTextSize(2);
   display.setCursor(0, 40);
-  display.println(dateBuf);
+  display.printf("%s %02d:%02d %s", DAY_LABELS[today], alarmHours[today], alarmMinutes[today], alarmPhaseLabel());
+  //display.println(dateBuf);
 
-  display.setCursor(0, 52);
-  display.printf("%02d:%02d %s", alarmHour, alarmMinute, alarmPhaseLabel());
+  //display.setCursor(0, 40);
+  //display.printf("%02d:%02d %s", alarmHour, alarmMinute, alarmPhaseLabel());
 
   display.display();
 }
 
-String weekdayCheckbox(const char* label, int dayIndex) {
+String dayScheduleRow(int dayIndex) {
   String checked = alarmWeekdays[dayIndex] ? "checked" : "";
-  return String("<label><input type='checkbox' name='d") + dayIndex + "' value='1' " + checked + ">" + label + "</label> ";
+  String row = "<tr><td>";
+  row += DAY_LABELS[dayIndex];
+  row += "</td><td><input type='checkbox' name='d";
+  row += dayIndex;
+  row += "' value='1' ";
+  row += checked;
+  row += "></td><td><input type='number' min='0' max='23' name='h";
+  row += dayIndex;
+  row += "' value='";
+  row += alarmHours[dayIndex];
+  row += "'></td><td><input type='number' min='0' max='59' name='m";
+  row += dayIndex;
+  row += "' value='";
+  row += alarmMinutes[dayIndex];
+  row += "'></td></tr>";
+  return row;
 }
 
 String buildWebPage() {
   String page = "<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-  page += "<style>body{font-family:Arial;margin:18px}input,button{font-size:1rem;padding:6px;margin:4px}fieldset{margin-top:10px}</style>";
-  page += "</head><body><h2>ESP32 Alarm Clock</h2>";
+  page += "<style>body{font-family:Arial;margin:18px}input,button{font-size:1rem;padding:6px;margin:4px}fieldset{margin-top:10px}table{border-collapse:collapse}th,td{padding:6px 8px;border-bottom:1px solid #ddd;text-align:left}</style>";
+  page += "</head><body><h2>Michael's Alarm Clock</h2>";
   page += "<p>IP: " + WiFi.localIP().toString() + "</p>";
   page += "<form method='POST' action='/save'>";
-  page += "<label>Hour <input type='number' min='0' max='23' name='hour' value='" + String(alarmHour) + "'></label><br>";
-  page += "<label>Minute <input type='number' min='0' max='59' name='minute' value='" + String(alarmMinute) + "'></label>";
-  page += "<fieldset><legend>Weekday schedule</legend>";
-  page += weekdayCheckbox("Sun", 0);
-  page += weekdayCheckbox("Mon", 1);
-  page += weekdayCheckbox("Tue", 2);
-  page += weekdayCheckbox("Wed", 3);
-  page += weekdayCheckbox("Thu", 4);
-  page += weekdayCheckbox("Fri", 5);
-  page += weekdayCheckbox("Sat", 6);
-  page += "</fieldset><button type='submit'>Save</button></form>";
+  page += "<fieldset><legend>Per-day alarm schedule</legend>";
+  page += "<table><tr><th>Day</th><th>Enable</th><th>Hour</th><th>Minute</th></tr>";
+  for (int i = 0; i < 7; i++) {
+    page += dayScheduleRow(i);
+  }
+  page += "</table></fieldset><button type='submit'>Save</button></form>";
   page += "<p><a href='/action?cmd=start'><button>Start Alarm</button></a> ";
   page += "<a href='/action?cmd=stop'><button>Stop Alarm</button></a></p>";
   page += "</body></html>";
@@ -215,17 +226,19 @@ void handleRoot() {
 }
 
 void handleSave() {
-  if (server.hasArg("hour")) {
-    int h = server.arg("hour").toInt();
-    if (h >= 0 && h <= 23) alarmHour = h;
-  }
-  if (server.hasArg("minute")) {
-    int m = server.arg("minute").toInt();
-    if (m >= 0 && m <= 59) alarmMinute = m;
-  }
-
   for (int i = 0; i < 7; i++) {
     alarmWeekdays[i] = server.hasArg(String("d") + i);
+    String hourArgName = String("h") + i;
+    String minuteArgName = String("m") + i;
+
+    if (server.hasArg(hourArgName)) {
+      int h = server.arg(hourArgName).toInt();
+      if (h >= 0 && h <= 23) alarmHours[i] = h;
+    }
+    if (server.hasArg(minuteArgName)) {
+      int m = server.arg(minuteArgName).toInt();
+      if (m >= 0 && m <= 59) alarmMinutes[i] = m;
+    }
   }
 
   alarmTriggeredToday = false;
@@ -264,11 +277,34 @@ void handleSerialCommands() {
       int hh = hhmm.substring(0, sep).toInt();
       int mm = hhmm.substring(sep + 1).toInt();
       if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) {
-        alarmHour = hh;
-        alarmMinute = mm;
+        for (int i = 0; i < 7; i++) {
+          alarmHours[i] = hh;
+          alarmMinutes[i] = mm;
+        }
         alarmTriggeredToday = false;
-        Serial.printf("Alarm set to %02d:%02d\n", alarmHour, alarmMinute);
+        Serial.printf("Alarm set for all days to %02d:%02d\n", hh, mm);
         return;
+      }
+    }
+  }
+
+  if (cmd.startsWith("DAY ")) {
+    String rest = cmd.substring(4);
+    int firstSpace = rest.indexOf(' ');
+    if (firstSpace > 0) {
+      int day = rest.substring(0, firstSpace).toInt();
+      String hhmm = rest.substring(firstSpace + 1);
+      int sep = hhmm.indexOf(':');
+      if (day >= 0 && day <= 6 && sep > 0) {
+        int hh = hhmm.substring(0, sep).toInt();
+        int mm = hhmm.substring(sep + 1).toInt();
+        if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) {
+          alarmHours[day] = hh;
+          alarmMinutes[day] = mm;
+          alarmTriggeredToday = false;
+          Serial.printf("%s set to %02d:%02d\n", DAY_LABELS[day], hh, mm);
+          return;
+        }
       }
     }
   }
@@ -285,7 +321,7 @@ void handleSerialCommands() {
     return;
   }
 
-  Serial.println("Commands: ALARM HH:MM | START | STOP");
+  Serial.println("Commands: ALARM HH:MM | DAY D HH:MM | START | STOP");
 }
 
 void setup() {
@@ -338,8 +374,8 @@ void loop() {
 
   if (!alarmTriggeredToday &&
       isWeekdayEnabled(timeinfo.tm_wday) &&
-      timeinfo.tm_hour == alarmHour &&
-      timeinfo.tm_min == alarmMinute &&
+      timeinfo.tm_hour == alarmHours[timeinfo.tm_wday] &&
+      timeinfo.tm_min == alarmMinutes[timeinfo.tm_wday] &&
       timeinfo.tm_sec < 2) {
     startAlarm();
     alarmTriggeredToday = true;
